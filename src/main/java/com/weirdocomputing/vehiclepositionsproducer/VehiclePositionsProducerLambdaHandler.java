@@ -1,0 +1,43 @@
+package com.weirdocomputing.vehiclepositionsproducer;
+
+
+import com.amazonaws.Response;
+import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.ScheduledEvent;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.weirdocomputing.transitlib.VehiclePosition;
+import com.weirdocomputing.transitlib.VehiclePositionCollection;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+
+// TODO - Trigger more frequently than every minute
+//        (Might have continuous virtual server supporting several publishing agencies.)
+
+
+public class VehiclePositionsProducerLambdaHandler implements RequestHandler<ScheduledEvent, Response<String>> {
+    private static final Logger logger = LoggerFactory.getLogger(VehiclePositionsProducerLambdaHandler.class);
+
+    @Override
+    public Response<String> handleRequest(ScheduledEvent scheduledEvent, Context context) {
+        Response<String> response = null;
+//        final LambdaLogger logger = context.getLogger();
+        HashMap<String, VehiclePosition> newPositions;
+        try {
+            newPositions = VehiclePositionsProducerMain.getUpdates();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        logger.info(String.format("Response: %s positions\n", newPositions.size()));
+        if (newPositions.size() > 0) {
+            ArrayNode rawResponse = VehiclePositionCollection.toJsonArray(newPositions.values());
+            String responseString = rawResponse.toString();
+            logger.info(String.format("Response: %s characters\n", responseString.length()));
+            response = new Response<>(responseString,null);
+        }
+        return response;
+    }
+}
