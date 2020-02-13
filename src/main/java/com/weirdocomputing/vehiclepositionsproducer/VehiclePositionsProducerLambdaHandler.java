@@ -22,7 +22,7 @@ public class VehiclePositionsProducerLambdaHandler implements RequestHandler<Sch
 
     @Override
     public Response<String> handleRequest(ScheduledEvent scheduledEvent, Context context) {
-        logger.info("Request from account {}\n", scheduledEvent.getAccount());
+        logger.info("Request from account {}", scheduledEvent.getAccount());
 
         Response<String> response = null;
 
@@ -33,14 +33,15 @@ public class VehiclePositionsProducerLambdaHandler implements RequestHandler<Sch
             throw new RuntimeException(e);
         }
 
-        logger.info(String.format("Response: %s positions\n", newPositions.size()));
         if (newPositions.size() > 0) {
             ArrayNode rawResponse = VehiclePositionCollection.toJsonArray(newPositions.values());
             String responseString = rawResponse.toString();
             response = new Response<>(responseString,null);
-            logger.info(String.format("Response: %s characters\n", responseString.length()));
+            logger.info(String.format("Response: %d positions %d characters",
+                    newPositions.size(),
+                    responseString.length()));
         } else {
-            logger.info("Response: null\n");
+            logger.info("Response: null");
         }
 
         return response;

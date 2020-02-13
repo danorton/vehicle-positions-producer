@@ -113,7 +113,6 @@ public class VehiclePositionsProducerMain {
         // fetch values
         newPositions = positionCollection.update(urlConnection.getInputStream());
         urlConnection.disconnect();
-        logger.info("{} positions read", newPositions.size());
 
         return newPositions;
     }
