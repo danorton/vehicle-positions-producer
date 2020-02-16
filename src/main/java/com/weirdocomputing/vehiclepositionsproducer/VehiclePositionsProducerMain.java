@@ -56,6 +56,7 @@ public class VehiclePositionsProducerMain {
             logger.info("{} positions read", newPositions.size());
 
             for (VehiclePosition p: newPositions.values()) {
+                logger.info("Position key: \"{}\"", p.getHashString());
                 logger.info("Position: {}", p.toJsonObject().toString());
             }
         } catch (Exception e) {
