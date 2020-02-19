@@ -1,6 +1,5 @@
 package com.weirdocomputing.vehiclepositionsproducer;
 
-
 import com.amazonaws.Response;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
@@ -13,7 +12,6 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.HashMap;
-import java.util.zip.Deflater;
 
 // TODO - Trigger more frequently than every minute
 //        (Might have continuous virtual server supporting several publishing agencies.)
@@ -21,7 +19,6 @@ import java.util.zip.Deflater;
 
 public class VehiclePositionsProducerLambdaHandler implements RequestHandler<ScheduledEvent, Response<byte[]>> {
     private static final Logger logger = LoggerFactory.getLogger(VehiclePositionsProducerLambdaHandler.class);
-    private static final Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
 
     @Override
     public Response<byte[]> handleRequest(ScheduledEvent scheduledEvent, Context context) {
@@ -37,7 +34,9 @@ public class VehiclePositionsProducerLambdaHandler implements RequestHandler<Sch
         }
 
         if (newPositions.size() > 0) {
-            VehiclePositionCollection positions = new VehiclePositionCollection(Duration.ofMinutes(60), newPositions);
+            VehiclePositionCollection positions = new VehiclePositionCollection(
+                    Duration.ofMinutes(60),
+                    newPositions.values().toArray(new VehiclePosition[0]));
             GtfsRealtime.FeedMessage feedMessage = positions.toFeedMessage(true);
             logger.info("FeedMessage: {} entities {} bytes",
                     feedMessage.getEntityCount(),feedMessage.getSerializedSize());
