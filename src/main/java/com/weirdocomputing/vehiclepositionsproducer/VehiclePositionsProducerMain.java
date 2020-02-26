@@ -2,11 +2,9 @@ package com.weirdocomputing.vehiclepositionsproducer;
 
 import com.weirdocomputing.transitlib.VehiclePosition;
 import com.weirdocomputing.transitlib.VehiclePositionCollection;
+import io.lettuce.core.RedisClient;
 import org.jetbrains.annotations.NotNull;
-import org.redisson.Redisson;
-import org.redisson.api.RedissonClient;
-import org.redisson.config.Config;
-import org.redisson.config.SingleServerConfig;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,34 +14,33 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Random;
 import java.util.Set;
 
-
+/**
+ * Main class for execution. This includes the CLI entry point and the
+ * work function when called from other environments (e.g. Lambda)
+ */
 public class VehiclePositionsProducerMain {
     private static final Logger logger = LoggerFactory.getLogger(VehiclePositionsProducerMain.class);
 
-    private static final Duration STALE_AGE = Duration.ofMinutes(60);
-    private static Duration staleAge;
-    private static final Instant TIME_TO_GIVE_UP = Instant.now().plus(Duration.ofSeconds(10));
-    private static Instant giveUpTime;
-    private static String redisHost = "localhost:6379";
+    private static final String DEFAULT_REDIS_HOST = "localhost:6379";
+    private static final Duration DEFAULT_STALE_AGE = Duration.ofMinutes(60);
+    private static final Instant DEFAULT_GIVE_UP_TIME = Instant.now().plus(Duration.ofSeconds(10));
+
+    private static String redisHost = DEFAULT_REDIS_HOST;
+    private static Duration staleAge = DEFAULT_STALE_AGE;
+    private static Instant giveUpTime = DEFAULT_GIVE_UP_TIME;
 
     private static URL protobufUrl;
 
     static {
         String envValue = System.getenv("TRANSIT_VP_STALE_AGE_MINUTES");
-        if (envValue == null || envValue.isBlank()) {
-            staleAge = STALE_AGE;
-        } else {
+        if (envValue != null && !envValue.isBlank()) {
             staleAge = Duration.ofMinutes(Integer.parseUnsignedInt(envValue));
         }
         envValue = System.getenv("TRANSIT_VP_MAX_WAIT_TIME_SECONDS");
-        if (envValue == null || envValue.isBlank()) {
-            giveUpTime = TIME_TO_GIVE_UP;
-        } else {
+        if (envValue != null && !envValue.isBlank()) {
             giveUpTime = Instant.now().plus(Duration.ofSeconds(Integer.parseUnsignedInt(envValue)));
         }
         try {
@@ -60,18 +57,28 @@ public class VehiclePositionsProducerMain {
 
     }
 
+    /**
+     * CLI entry point
+     * @param args We don't currently reference the passed arguments
+     */
     public static void main(String[] args) {
 
-        HashMap<String, VehiclePosition> newPositions;
+        VehiclePositionCollection newPositions;
 
         try {
-            newPositions = getUpdates();
+            newPositions = fetchUpdates();
 
-            logger.info("{} positions read", newPositions.size());
+            if (newPositions != null) {
+                logger.info("{} new positions", newPositions.size());
 
-            for (VehiclePosition p: newPositions.values()) {
-                logger.trace("Position key: \"{}\"", p.getHashString());
-                logger.trace("Position: {}", p.toJsonObject().toString());
+                if (logger.isTraceEnabled()) {
+                    for (VehiclePosition p: newPositions.values()) {
+                        logger.trace("Position key: \"{}\"", p.getHashString());
+                        logger.trace("Position: {}", p.toJsonObject().toString());
+                    }
+                }
+            } else {
+                logger.info("No new positions");
             }
         } catch (Exception e) {
             while (e.getMessage() == null) {
@@ -87,82 +94,85 @@ public class VehiclePositionsProducerMain {
         logger.info("Normal exit");
     }
 
-    @NotNull
-    static HashMap<String, VehiclePosition> getUpdates() throws Exception {
-
+    /**
+     * Main processing used by main and Lambda entry points
+     * @return collection of vehicle positions that have changed since
+     * the last report.
+     * @throws Exception Various failures, e.g. server request failures
+     */
+    @Nullable
+    static VehiclePositionCollection fetchUpdates() throws Exception {
         VehiclePositionCollection positionCollection;
-        HashMap<String, VehiclePosition> newPositions = new HashMap<>();
-        String lastETag;
+        String prevETag, currETag;
         Set<String> latestKeys;
-//        VehicleIdAndTimestamp x; //fixme *****************
 
 
+        RedisClient redisClient = RedisClient.create(String.format("redis://%s", redisHost));
 
-        // Read lastETag and index from Redis
-        Config config = new Config();
-        SingleServerConfig ssConfig = config.useSingleServer().setAddress(
-                String.format("redis://%s", redisHost));
-        ssConfig.setConnectionMinimumIdleSize(2);
-        ssConfig.setConnectionPoolSize(2);
-        config.setNettyThreads(2);
-        RedissonClient redisClient = Redisson.create(config);
         VehiclePositionsIndex oldVpIndex = VehiclePositionsIndex.fromRedis(redisClient);
         if (oldVpIndex == null) {
-            // create a value that won't match anything
-            lastETag = String.valueOf((new Random()).nextLong());
+            // create an ETag that won't match anything
+            prevETag = null;
             latestKeys = new HashSet<>();
+            logger.info("No previous ETag");
         } else {
-            lastETag = oldVpIndex.getId();
+            prevETag = oldVpIndex.getId();
             latestKeys = oldVpIndex.getKeys();
-            logger.info("Previous ETag: {}", lastETag);
+            logger.info("Previous ETag: {}", prevETag);
         }
 
-        // read vehicle positions
-        HttpURLConnection urlConnection = getHttpURLConnection(protobufUrl);
-        String newETag = urlConnection.getHeaderField("ETag");
-        logger.info("Current ETag: {}", newETag);
+        // Get current ETag from publisher
+        logger.info("Get VP connection to {}", protobufUrl);
 
+        HttpURLConnection vpConnection = getHttpURLConnection(protobufUrl, prevETag);
+        currETag = vpConnection.getHeaderField("ETag");
+        logger.info("Connection response code {} ETag {}", vpConnection.getResponseCode(), currETag);
 
         // If nothing changed, re-read until there's a change
-        while(lastETag.equals(newETag) && Instant.now().isBefore(giveUpTime)) {
-            urlConnection.disconnect();
+        while((vpConnection.getResponseCode() / 100) != 2 && Instant.now().isBefore(giveUpTime)) {
+            // disconnect without reading positions
+            vpConnection.disconnect();
             // sleep 1 second between retries
-            boolean needSleep = true;
-            do {
-                try {
-                    logger.info("Sleeping 1 second");
-                    Thread.sleep(1000);
-                    needSleep = false;
-                } catch (InterruptedException e) {
-                    // Ignore interrupted exception
-                }
-            } while (needSleep);
-            urlConnection = getHttpURLConnection(protobufUrl);
-            newETag = urlConnection.getHeaderField("ETag");
+            logger.info("Sleeping 1 second");
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                // Ignore interrupted exception
+            }
+            logger.info("Get VP connection");
+            vpConnection = getHttpURLConnection(protobufUrl, prevETag);
+            currETag = vpConnection.getHeaderField("ETag");
+            logger.info("Connection response code {} ETag {}", vpConnection.getResponseCode(), currETag);
         }
-        if (lastETag.equals(newETag)) {
-            // we timed out looking for a changed response
-            logger.warn("No changes in VehiclePositions");
+        if ((vpConnection.getResponseCode() / 100) != 2) {
+            // Nothing changed and we're out of time
+            vpConnection.disconnect();
             redisClient.shutdown();
-            return newPositions;
+            logger.warn("No changes in VehiclePositions");
+            return null;
         }
-        logger.info("Current ETag: {}", newETag);
-        lastETag = newETag;
-
-        positionCollection = new VehiclePositionCollection(staleAge);
 
         // fetch latest values
-        positionCollection.update(urlConnection.getInputStream());
-        urlConnection.disconnect();
+        logger.info("Fetch positions");
+        positionCollection = VehiclePositionCollection.fromInputStream(staleAge, vpConnection.getInputStream());
+        logger.info("Disconnect from publisher");
+        vpConnection.disconnect();
+        // remove duplicates
         positionCollection.removeDuplicates(latestKeys);
 
         // Update persistent index
-        (new VehiclePositionsIndex(lastETag, positionCollection)).toRedis(redisClient);
+        (new VehiclePositionsIndex(currETag, positionCollection)).toRedis(redisClient);
         redisClient.shutdown();
-        return newPositions;
+        return positionCollection.size() != 0 ? positionCollection : null;
     }
 
-    private static HttpURLConnection getHttpURLConnection(@NotNull URL url) {
+    /**
+     * Define connection for HTTP request
+     * @param url URL for connection request
+     * @param prevETag previous ETag to ignore identical responses
+     * @return connection object
+     */
+    private static HttpURLConnection getHttpURLConnection(@NotNull URL url, String prevETag) {
         HttpURLConnection urlConnection = null;
 
         try {
@@ -172,6 +182,9 @@ public class VehiclePositionsProducerMain {
         }
         assert urlConnection != null;
         urlConnection.setUseCaches(true);
+        if (prevETag != null) {
+            urlConnection.setRequestProperty("If-None-Match", prevETag);
+        }
 
         return urlConnection;
     }

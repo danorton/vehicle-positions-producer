@@ -7,14 +7,15 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.weirdocomputing.transitlib.VehiclePosition;
 import com.weirdocomputing.transitlib.VehiclePositionCollection;
-import org.redisson.api.RBucket;
-import org.redisson.api.RedissonClient;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.SetArgs;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * An index of vehicle position reports.
@@ -27,7 +28,6 @@ public class VehiclePositionsIndex {
      * Unique ID for this index
      * If this is the same as the previous index, all the keys are the same.
      */
-//    private VehicleIdAndTimestamp vehicleIdAndTimestamp;
     private String id;
 
     /**
@@ -41,7 +41,7 @@ public class VehiclePositionsIndex {
     private static final ObjectMapper mapper = new ObjectMapper();
 
 
-    private static final Logger logger = LoggerFactory.getLogger(VehiclePositionsProducerMain.class);
+    private static final Logger logger = LoggerFactory.getLogger(VehiclePositionsIndex.class);
     private static final JsonNodeFactory jnf = JsonNodeFactory.instance;
 
 
@@ -85,11 +85,17 @@ public class VehiclePositionsIndex {
      * @return new instance
      * @throws Exception If JSON string is invalid
      */
-    public static VehiclePositionsIndex fromRedis(RedissonClient redisClient) throws Exception {
+    public static VehiclePositionsIndex fromRedis(RedisClient redisClient) throws Exception {
+        StatefulRedisConnection<String, String> connection = redisClient.connect();
+        RedisCommands<String, String> syncCommands = connection.sync();
         VehiclePositionsIndex result = null;
-        RBucket<String> vpBucket = redisClient.getBucket("VehiclePositionsIndex");
-        if (vpBucket != null) {
-            result = VehiclePositionsIndex.fromJson(vpBucket.get());
+        logger.info("+fromRedis: GET");
+        String vpIndexJsonString = syncCommands.get("VehiclePositionsIndex");
+        if (vpIndexJsonString != null) {
+            logger.info("-fromRedis: Size: {}", vpIndexJsonString.length());
+            result = VehiclePositionsIndex.fromJson(vpIndexJsonString);
+        } else {
+            logger.info("-fromRedis: (nil)");
         }
         return result;
     }
@@ -134,10 +140,16 @@ public class VehiclePositionsIndex {
         return result;
     }
 
-    public void toRedis(RedissonClient redisClient) {
-        RBucket<String> vpBucket = redisClient.getBucket("VehiclePositionsIndex");
-        logger.trace("toRedis: {}", this.toJsonObject().toString());
-        vpBucket.set(this.toJsonObject().toString(), 1, TimeUnit.MINUTES);
+    /**
+     * Serialize to Redis server
+     * @param redisClient Lettuce client object
+     */
+    public void toRedis(RedisClient redisClient) {
+        StatefulRedisConnection<String, String> connection = redisClient.connect();
+        RedisCommands<String, String> syncCommands = connection.sync();
+        syncCommands.set("VehiclePositionsIndex",
+            this.toJsonObject().toString(),
+            SetArgs.Builder.ex(300));
     }
 
     public String getId() {
