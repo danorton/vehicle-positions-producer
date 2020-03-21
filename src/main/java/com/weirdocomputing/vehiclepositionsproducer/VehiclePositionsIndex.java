@@ -89,13 +89,13 @@ public class VehiclePositionsIndex {
         StatefulRedisConnection<String, String> connection = redisClient.connect();
         RedisCommands<String, String> syncCommands = connection.sync();
         VehiclePositionsIndex result = null;
-        logger.info("+fromRedis: GET");
+        logger.debug("+fromRedis: GET");
         String vpIndexJsonString = syncCommands.get("VehiclePositionsIndex");
         if (vpIndexJsonString != null) {
-            logger.info("-fromRedis: Size: {}", vpIndexJsonString.length());
+            logger.debug("-fromRedis: Size: {}", vpIndexJsonString.length());
             result = VehiclePositionsIndex.fromJson(vpIndexJsonString);
         } else {
-            logger.info("-fromRedis: (nil)");
+            logger.debug("-fromRedis: (nil)");
         }
         return result;
     }
